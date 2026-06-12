@@ -19,7 +19,7 @@ import zipfile
 from collections import OrderedDict
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from pdfsplit import page_count, iter_pages
@@ -137,5 +137,15 @@ def healthz() -> dict:
     return {"ok": True}
 
 
-# Serve the frontend (index.html) at "/". Mounted last so /api/* wins.
+# Serve the frontend with no-cache so a redeployed UI is never shadowed by a
+# stale cached index.html (which would call the old API shape and break).
+@app.get("/")
+def index() -> FileResponse:
+    return FileResponse(
+        "static/index.html",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
+
+
+# Any other static asset. Mounted last so explicit routes (/, /api/*) win.
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
