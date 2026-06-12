@@ -98,44 +98,59 @@ def _filename(sample: str | None, date: str | None, page: int) -> str:
     return f"{base}.pdf"
 
 
-def split_pdf(data: bytes) -> tuple[list[PageResult], dict[str, bytes]]:
-    """
-    Split `data` (a PDF) into one single-page PDF per page.
+def page_count(data: bytes) -> int:
+    """Number of pages in `data` (cheap; opens and closes the PDF)."""
+    src = fitz.open(stream=data, filetype="pdf")
+    try:
+        return src.page_count
+    finally:
+        src.close()
 
-    Returns (results, files) where files maps filename -> pdf bytes. Filenames
-    are <sample>_<received-date>.pdf; missing fields fall back gracefully and
-    collisions get a -2, -3 ... suffix so nothing is lost.
+
+def iter_pages(data: bytes):
+    """
+    Yield (PageResult, pdf_bytes) one page at a time, so callers can report
+    progress / stream results instead of waiting for the whole document.
+
+    Filenames are <sample>_<received-date>.pdf; missing fields fall back
+    gracefully and collisions get a -2, -3 ... suffix so nothing is lost.
     """
     src = fitz.open(stream=data, filetype="pdf")
+    used: dict[str, int] = {}
+    try:
+        for i in range(src.page_count):
+            page = src[i]
+            try:
+                raw = _ocr_strip(page)
+                sample, date = _parse(raw)
+            except Exception as exc:  # noqa: BLE001 - never let one page kill the batch
+                sample, date, raw = None, None, f"OCR error: {exc}"
+
+            name = _filename(sample, date, i + 1)
+            if name in used:
+                used[name] += 1
+                name = name[:-4] + f"-{used[name]}.pdf"
+            else:
+                used[name] = 1
+
+            out = fitz.open()
+            out.insert_pdf(src, from_page=i, to_page=i)
+            pdf_bytes = out.tobytes()
+            out.close()
+
+            yield (PageResult(page=i + 1, sample=sample, received_date=date,
+                             filename=name, raw=raw.strip()), pdf_bytes)
+    finally:
+        src.close()
+
+
+def split_pdf(data: bytes) -> tuple[list[PageResult], dict[str, bytes]]:
+    """Convenience wrapper that processes every page and returns them together."""
     results: list[PageResult] = []
     files: dict[str, bytes] = {}
-    used: dict[str, int] = {}
-
-    for i in range(src.page_count):
-        page = src[i]
-        try:
-            raw = _ocr_strip(page)
-            sample, date = _parse(raw)
-        except Exception as exc:  # noqa: BLE001 - never let one page kill the batch
-            sample, date, raw = None, None, f"OCR error: {exc}"
-
-        name = _filename(sample, date, i + 1)
-        if name in used:
-            used[name] += 1
-            name = name[:-4] + f"-{used[name]}.pdf"
-        else:
-            used[name] = 1
-
-        out = fitz.open()
-        out.insert_pdf(src, from_page=i, to_page=i)
-        files[name] = out.tobytes()
-        out.close()
-
-        results.append(PageResult(page=i + 1, sample=sample,
-                                  received_date=date, filename=name,
-                                  raw=raw.strip()))
-
-    src.close()
+    for res, pdf_bytes in iter_pages(data):
+        results.append(res)
+        files[res.filename] = pdf_bytes
     return results, files
 
 
