@@ -76,7 +76,8 @@
     </div>
   </header>
   <p class="sub">Upload a multi-page scanned report PDF. Each page is split into its own
-    PDF and renamed to its <b>Test Report No.</b> — read automatically from the page header.</p>
+    PDF and renamed <b>&lt;sample no&gt;_&lt;received date&gt;.pdf</b> — both read
+    automatically from the page.</p>
 
   <div class="card">
     <div id="drop" class="drop">
@@ -97,14 +98,14 @@
   <div id="result" class="card hidden">
     <div class="summary">
       <div class="stat"><div class="n" id="sPages">0</div><div class="l">Pages</div></div>
-      <div class="stat"><div class="n" id="sNamed">0</div><div class="l">Numbered</div></div>
+      <div class="stat"><div class="n" id="sNamed">0</div><div class="l">Named</div></div>
       <div class="stat"><div class="n" id="sUnread">0</div><div class="l">Unread</div></div>
     </div>
     <div class="row" style="margin-top:0;margin-bottom:6px">
       <button id="zip" class="btn btn-primary">⬇ Download all (ZIP)</button>
     </div>
     <table>
-      <thead><tr><th>#</th><th>Report No.</th><th>File</th><th></th></tr></thead>
+      <thead><tr><th>#</th><th>Sample No.</th><th>Received</th><th>File</th><th></th></tr></thead>
       <tbody id="rows"></tbody>
     </table>
   </div>
@@ -163,11 +164,17 @@ function render(d){
   $("#sUnread").textContent=d.unread;
   rows.innerHTML="";
   for(const it of d.results){
-    const ok=it.report_no!==null;
     const tr=document.createElement("tr");
+    const sampleCell = it.sample
+      ? `<span class="tag ok">${it.sample}</span>`
+      : `<span class="tag bad">unread</span>`;
+    const dateCell = it.received_date
+      ? it.received_date
+      : `<span class="tag bad">—</span>`;
     tr.innerHTML=`
       <td class="pno">${it.page}</td>
-      <td>${ok?`<span class="tag ok">${it.report_no}</span>`:`<span class="tag bad">unread</span>`}</td>
+      <td>${sampleCell}</td>
+      <td>${dateCell}</td>
       <td class="name">${it.filename}</td>
       <td><a class="dl" href="/api/download/${jobId}/${encodeURIComponent(it.filename)}">Download</a></td>`;
     rows.appendChild(tr);

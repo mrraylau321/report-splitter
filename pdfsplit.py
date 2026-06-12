@@ -1,12 +1,17 @@
 """
-Core logic: split a multi-page scanned test-report PDF into one PDF per page,
-each renamed to its Test Report No. (read by OCR from the top-right corner).
+Core logic: split a multi-page scanned test-report PDF into one single-page PDF
+per page, each renamed to "<first sample no>_<sample received date>.pdf"
+(e.g. 26050178_27-05-2026.pdf), read by OCR.
 
-No text layer exists in these scans, so we crop the header region of each page,
-binarize it, and OCR with Tesseract. The report number format for this lab is a
-fixed prefix letter + N digits (e.g. T0152457). Tesseract reliably reads the
-digits but often misreads the leading "T" as "1"/"7", so we normalize to
-PREFIX + last CORE_LEN digits.
+The scans have no text layer, so for each page we crop the left header/results
+strip, binarize it, and OCR with Tesseract, then parse two fields by content
+(not by fixed position, since their vertical place shifts with the length of the
+address / sample description above them):
+
+  * Sample Received Date  -> "Sample Received Date : 27/05/2026"  -> 27-05-2026
+  * First sample number   -> first table data row's "Sample Name" column
+                             (a 6+ digit number followed by the "Sample No" code),
+                             e.g. 26050178 or 2026022238 (length varies per report).
 """
 from __future__ import annotations
 
@@ -38,52 +43,67 @@ if _TESS:
     pytesseract.pytesseract.tesseract_cmd = _TESS
 
 # ---- Tunables (match this lab's "typical" report layout) -----------------------
-PREFIX = os.environ.get("REPORT_PREFIX", "T")   # leading letter of report numbers
-CORE_LEN = int(os.environ.get("REPORT_DIGITS", "7"))  # digits after the prefix
-DPI = 300  # enough to read the printed report no.; lighter than 400 on small instances
-# Header crop as fractions of page size: top-right block that holds "Test Report No".
-CLIP = (0.55, 0.10, 0.99, 0.22)  # x0, y0, x1, y1
+DPI = 300
+# Left strip (fractions of page size) covering the received-date line and the
+# results table. Stops at 0.52 width to exclude the "Test Completed Date" on the
+# right of the same line.
+STRIP = (0.0, 0.27, 0.52, 0.72)  # x0, y0, x1, y1
+THRESH = 170  # binarization cutoff
 
 
 @dataclass
 class PageResult:
-    page: int          # 1-based page number
-    report_no: str | None
+    page: int                  # 1-based page number
+    sample: str | None         # first sample number
+    received_date: str | None  # DD-MM-YYYY
     filename: str
-    raw: str           # raw OCR line, for debugging / transparency in the UI
+    raw: str                   # raw OCR text, for transparency / debugging
 
 
-def _ocr_header(page: fitz.Page) -> str:
+def _ocr_strip(page: fitz.Page) -> str:
     r = page.rect
-    clip = fitz.Rect(r.width * CLIP[0], r.height * CLIP[1],
-                     r.width * CLIP[2], r.height * CLIP[3])
+    clip = fitz.Rect(r.width * STRIP[0], r.height * STRIP[1],
+                     r.width * STRIP[2], r.height * STRIP[3])
     # Grayscale pixmap straight from PyMuPDF (no PNG round-trip, less memory).
     pix = page.get_pixmap(dpi=DPI, clip=clip, colorspace=fitz.csGRAY)
     img = Image.frombytes("L", (pix.width, pix.height), pix.samples)
     pix = None  # release the pixmap buffer promptly
-    img = img.point(lambda x: 0 if x < 160 else 255)  # binarize
+    img = img.point(lambda x: 0 if x < THRESH else 255)  # binarize
     return pytesseract.image_to_string(img, config="--psm 6")
 
 
-def _extract(text: str) -> tuple[str | None, str]:
-    """Return (normalized report_no, raw_line). None if not found."""
-    for line in text.splitlines():
-        if re.search(r"Report\s*No", line, re.I) and "Folder" not in line:
-            m = re.search(r"No\s*[:.]?\s*([A-Za-z0-9]{6,10})", line)
-            if m:
-                digits = re.sub(r"\D", "", m.group(1))
-                if len(digits) >= CORE_LEN:
-                    return f"{PREFIX}{digits[-CORE_LEN:]}", line.strip()
-            return None, line.strip()
-    return None, text.replace("\n", " ").strip()
+def _parse(text: str) -> tuple[str | None, str | None]:
+    """(sample number, received date DD-MM-YYYY) — either may be None."""
+    md = re.search(
+        r"Received\s*Date\s*[:.]?\s*(\d{1,2})\s*/\s*(\d{1,2})\s*/\s*(\d{2,4})",
+        text, re.I)
+    date = f"{md.group(1).zfill(2)}-{md.group(2).zfill(2)}-{md.group(3)}" if md else None
+
+    # First data row: a run of 6+ digits (Sample Name) followed by the Sample No
+    # code, which starts with a letter (e.g. "26050178 WT-2605-0700").
+    ms = re.search(r"(\d{6,})\s+[A-Za-z]", text)
+    sample = ms.group(1) if ms else None
+    return sample, date
+
+
+def _filename(sample: str | None, date: str | None, page: int) -> str:
+    if sample and date:
+        base = f"{sample}_{date}"
+    elif sample:
+        base = sample
+    elif date:
+        base = f"p{page}_{date}"
+    else:
+        base = f"UNREAD_p{page}"
+    return f"{base}.pdf"
 
 
 def split_pdf(data: bytes) -> tuple[list[PageResult], dict[str, bytes]]:
     """
     Split `data` (a PDF) into one single-page PDF per page.
 
-    Returns (results, files) where files maps filename -> pdf bytes.
-    Filenames are <report_no>.pdf; unread pages become UNREAD_p<n>.pdf;
+    Returns (results, files) where files maps filename -> pdf bytes. Filenames
+    are <sample>_<received-date>.pdf; missing fields fall back gracefully and
     collisions get a -2, -3 ... suffix so nothing is lost.
     """
     src = fitz.open(stream=data, filetype="pdf")
@@ -94,15 +114,15 @@ def split_pdf(data: bytes) -> tuple[list[PageResult], dict[str, bytes]]:
     for i in range(src.page_count):
         page = src[i]
         try:
-            report_no, raw = _extract(_ocr_header(page))
+            raw = _ocr_strip(page)
+            sample, date = _parse(raw)
         except Exception as exc:  # noqa: BLE001 - never let one page kill the batch
-            report_no, raw = None, f"OCR error: {exc}"
+            sample, date, raw = None, None, f"OCR error: {exc}"
 
-        base = report_no if report_no else f"UNREAD_p{i + 1}"
-        name = f"{base}.pdf"
+        name = _filename(sample, date, i + 1)
         if name in used:
             used[name] += 1
-            name = f"{base}-{used[name]}.pdf"
+            name = name[:-4] + f"-{used[name]}.pdf"
         else:
             used[name] = 1
 
@@ -111,8 +131,9 @@ def split_pdf(data: bytes) -> tuple[list[PageResult], dict[str, bytes]]:
         files[name] = out.tobytes()
         out.close()
 
-        results.append(PageResult(page=i + 1, report_no=report_no,
-                                  filename=name, raw=raw))
+        results.append(PageResult(page=i + 1, sample=sample,
+                                  received_date=date, filename=name,
+                                  raw=raw.strip()))
 
     src.close()
     return results, files
@@ -123,6 +144,6 @@ if __name__ == "__main__":
     with open(path, "rb") as fh:
         res, files = split_pdf(fh.read())
     for r in res:
-        flag = "" if r.report_no else "  <-- UNREAD"
-        print(f"page {r.page:2}: {r.filename:20}{flag}  (ocr: {r.raw!r})")
+        flag = "" if (r.sample and r.received_date) else "  <-- check"
+        print(f"page {r.page:2}: {r.filename:34}{flag}")
     print(f"\n{len(files)} files, {sum(len(b) for b in files.values())//1024} KB total")

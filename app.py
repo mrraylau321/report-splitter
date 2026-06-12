@@ -54,14 +54,15 @@ async def process(file: UploadFile = File(...)) -> JSONResponse:
     }
     _evict()
 
-    unread = sum(1 for r in results if r.report_no is None)
+    unread = sum(1 for r in results if not (r.sample and r.received_date))
     return JSONResponse({
         "job_id": job_id,
         "source": file.filename,
         "pages": len(results),
         "unread": unread,
         "results": [
-            {"page": r.page, "report_no": r.report_no, "filename": r.filename}
+            {"page": r.page, "sample": r.sample,
+             "received_date": r.received_date, "filename": r.filename}
             for r in results
         ],
     })

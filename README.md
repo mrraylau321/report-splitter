@@ -1,8 +1,8 @@
 # Test Report Splitter
 
 Upload a multi-page scanned **test-report PDF** → get back one PDF per page, each
-renamed to its **Test Report No.** (e.g. `T0152457.pdf`), read automatically from
-the page header by OCR.
+renamed **`<first sample no>_<sample received date>.pdf`**
+(e.g. `26050178_27-05-2026.pdf`), both read automatically by OCR.
 
 - **Backend:** FastAPI + [PyMuPDF](https://pymupdf.readthedocs.io/) (split) +
   [Tesseract](https://github.com/tesseract-ocr/tesseract) (OCR)
@@ -11,18 +11,22 @@ the page header by OCR.
 
 ## How it works
 
-Each page is a scan with no text layer, so the app crops the top-right header,
-binarizes it, and OCRs the `Test Report No.` line. Tesseract reads the digits
-reliably but tends to misread the leading `T`, so the result is normalized to
-`PREFIX + last N digits`.
+Each page is a scan with no text layer, so the app crops the left header/results
+strip, binarizes it, OCRs it once, and parses two fields **by content** (not by
+fixed position, since they shift with the length of the address / sample
+description above):
 
-Tunable via environment variables:
+* **Sample Received Date** — `Sample Received Date : 27/05/2026` → `27-05-2026`
+* **First sample number** — the first table data row's *Sample Name* (a 6+ digit
+  number immediately followed by the *Sample No* code), e.g. `26050178` or
+  `2026022238` (length varies between reports).
 
-| Var | Default | Meaning |
-|-----|---------|---------|
-| `REPORT_PREFIX` | `T` | Leading letter of report numbers |
-| `REPORT_DIGITS` | `7` | Digit count after the prefix |
-| `TESSERACT_CMD` | (auto) | Path to the tesseract binary (auto-detected on Win/Docker) |
+Filename = `<sample>_<date>.pdf`. If a field can't be read the name falls back
+gracefully (`<sample>.pdf`, `p<n>_<date>.pdf`, or `UNREAD_p<n>.pdf`) so no page
+is ever dropped.
+
+`TESSERACT_CMD` env var overrides the tesseract binary path (auto-detected on
+Windows/Docker).
 
 ## Run locally
 
