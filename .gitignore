@@ -13,3 +13,6 @@ SKM*.pdf
 .DS_Store
 
 .claude/
+_*.json
+_*.log
+_*.txt
