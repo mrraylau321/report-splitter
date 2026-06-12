@@ -16,6 +16,9 @@ import re
 import sys
 from dataclasses import dataclass
 
+# Keep memory/CPU low on small free-tier instances: one OCR thread.
+os.environ.setdefault("OMP_THREAD_LIMIT", "1")
+
 import fitz  # PyMuPDF
 import pytesseract
 from PIL import Image
@@ -37,7 +40,7 @@ if _TESS:
 # ---- Tunables (match this lab's "typical" report layout) -----------------------
 PREFIX = os.environ.get("REPORT_PREFIX", "T")   # leading letter of report numbers
 CORE_LEN = int(os.environ.get("REPORT_DIGITS", "7"))  # digits after the prefix
-DPI = 400
+DPI = 300  # enough to read the printed report no.; lighter than 400 on small instances
 # Header crop as fractions of page size: top-right block that holds "Test Report No".
 CLIP = (0.55, 0.10, 0.99, 0.22)  # x0, y0, x1, y1
 
@@ -54,8 +57,10 @@ def _ocr_header(page: fitz.Page) -> str:
     r = page.rect
     clip = fitz.Rect(r.width * CLIP[0], r.height * CLIP[1],
                      r.width * CLIP[2], r.height * CLIP[3])
-    pix = page.get_pixmap(dpi=DPI, clip=clip)
-    img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("L")
+    # Grayscale pixmap straight from PyMuPDF (no PNG round-trip, less memory).
+    pix = page.get_pixmap(dpi=DPI, clip=clip, colorspace=fitz.csGRAY)
+    img = Image.frombytes("L", (pix.width, pix.height), pix.samples)
+    pix = None  # release the pixmap buffer promptly
     img = img.point(lambda x: 0 if x < 160 else 255)  # binarize
     return pytesseract.image_to_string(img, config="--psm 6")
 
@@ -88,7 +93,10 @@ def split_pdf(data: bytes) -> tuple[list[PageResult], dict[str, bytes]]:
 
     for i in range(src.page_count):
         page = src[i]
-        report_no, raw = _extract(_ocr_header(page))
+        try:
+            report_no, raw = _extract(_ocr_header(page))
+        except Exception as exc:  # noqa: BLE001 - never let one page kill the batch
+            report_no, raw = None, f"OCR error: {exc}"
 
         base = report_no if report_no else f"UNREAD_p{i + 1}"
         name = f"{base}.pdf"

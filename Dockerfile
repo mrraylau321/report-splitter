@@ -14,4 +14,6 @@ COPY . .
 
 # Render injects $PORT; default to 10000 for local `docker run`.
 ENV PORT=10000
+# Keep Tesseract single-threaded so it stays within small free-tier memory.
+ENV OMP_THREAD_LIMIT=1
 CMD ["sh", "-c", "uvicorn app:app --host 0.0.0.0 --port ${PORT:-10000}"]
