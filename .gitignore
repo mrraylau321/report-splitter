@@ -11,3 +11,5 @@ SKM*.pdf
 *.pdf
 
 .DS_Store
+
+.claude/
