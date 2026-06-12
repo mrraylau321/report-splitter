@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: report-splitter
+    runtime: docker
+    plan: free
+    healthCheckPath: /healthz
+    autoDeploy: true

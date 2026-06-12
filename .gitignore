@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+_*.png
+_*.py
+*.zip
+
+# Don't publish real client reports to a public repo.
+SKM*.pdf
+*.pdf
+
+.DS_Store
